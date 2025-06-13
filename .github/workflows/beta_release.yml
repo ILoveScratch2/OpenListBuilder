@@ -12,55 +12,7 @@ permissions:
   contents: write
 
 jobs:
-  changelog:
-    strategy:
-      matrix:
-        platform: [ ubuntu-latest ]
-        go-version: [ '1.21' ]
-    name: Beta Release Changelog
-    runs-on: ${{ matrix.platform }}
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-
-      - name: Create or update ref
-        id: create-or-update-ref
-        uses: ovsds/create-or-update-ref-action@v1
-        with:
-          ref: tags/beta
-          sha: ${{ github.sha }}
-
-      - name: Delete beta tag
-        run: git tag -d beta
-        continue-on-error: true
-
-      - name: changelog # or changelogithub@0.12 if ensure the stable result
-        id: changelog
-        run: |
-          git tag -l
-          npx changelogithub --output CHANGELOG.md
-
-      # Disable this right now, use github workflow assets for easier manipulation
-      # - name: Upload assets
-      #   uses: softprops/action-gh-release@v2
-      #   with:
-      #     body_path: "See CHANGELOG.md"
-      #     files: CHANGELOG.md
-      #     prerelease: true
-      #     tag_name: beta
-      - name: Upload assets
-        uses: actions/upload-artifact@v4
-        with:
-          name: beta changelog
-          path: ${{ github.workspace }}/CHANGELOG.md
-          compression-level: 0
-          if-no-files-found: error # 'warn' or 'ignore' are also available, defaults to `warn`
-
   release:
-    needs:
-      - changelog
     strategy:
       matrix:
         include:
@@ -107,11 +59,9 @@ jobs:
             github.com/alist-org/alist/v3/internal/conf.GitCommit=$git_commit
             github.com/alist-org/alist/v3/internal/conf.Version=$tag
             github.com/alist-org/alist/v3/internal/conf.WebVersion=dev
-
       - name: Compress
         run: |
           bash build.sh zip ${{ matrix.hash }}
-
       # See above           
       # - name: Upload assets
       #   uses: softprops/action-gh-release@v2
@@ -128,7 +78,6 @@ jobs:
           echo "Original target: ${{ matrix.target }}"
           echo "Cleaned target: $CLEANED_TARGET"
           echo "cleaned_target=$CLEANED_TARGET" >> $GITHUB_ENV
-
       - name: Upload assets
         uses: actions/upload-artifact@v4
         with:
@@ -136,31 +85,3 @@ jobs:
           path: ${{ github.workspace }}/build/compress/*
           compression-level: 0
           if-no-files-found: error # 'warn' or 'ignore' are also available, defaults to `warn`
-
-  # TODO: We do not have desktop clients right now.        
-  # desktop:
-  #   needs:
-  #     - release
-  #   name: Beta Release Desktop
-  #   runs-on: ubuntu-latest
-  #   steps:
-  #     - name: Checkout repo
-  #       uses: actions/checkout@v4
-  #       with:
-  #         repository: alist-org/desktop-release
-  #         ref: main
-  #         persist-credentials: false
-  #         fetch-depth: 0
-
-  #     - name: Commit
-  #       run: |
-  #         git config --local user.email "bot@nn.ci"
-  #         git config --local user.name "IlaBot"
-  #         git commit --allow-empty -m "Trigger build for ${{ github.sha }}"
-
-  #     - name: Push commit
-  #       uses: ad-m/github-push-action@master
-  #       with:
-  #         github_token: ${{ secrets.MY_TOKEN }}
-  #         branch: main
-  #         repository: alist-org/desktop-release
