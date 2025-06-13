@@ -1,4 +1,4 @@
-name: build and re
+name: build snd rel
 
 on:
   schedule:
@@ -24,13 +24,12 @@ jobs:
           - android-arm64
     name: Build
     runs-on: ${{ matrix.platform }}
-    outputs:
-      artifacts: ${{ steps.upload.outputs.artifact-paths }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - uses: benjlevesque/short-sha@v3.0
+      - name: Get short SHA
+        uses: benjlevesque/short-sha@v3.0
         id: short-sha
 
       - name: Setup Go
@@ -41,7 +40,7 @@ jobs:
       - name: Setup web
         run: bash build.sh dev web
 
-      - name: Build
+      - name: Build binaries
         uses: go-cross/cgo-actions@v1
         with:
           targets: ${{ matrix.target }}
@@ -55,14 +54,10 @@ jobs:
             github.com/alist-org/alist/v3/internal/conf.WebVersion=dev
 
       - name: Upload artifact
-        id: upload
         uses: actions/upload-artifact@v4
         with:
           name: openlist_${{ steps.short-sha.outputs.sha }}_${{ matrix.target }}
           path: build/*
-        # 设置输出以便后续作业使用
-        run: |
-          echo "artifact-paths=openlist_${{ steps.short-sha.outputs.sha }}_${{ matrix.target }}" >> $GITHUB_OUTPUT
 
   create-release:
     name: Create Release
@@ -74,18 +69,17 @@ jobs:
       - name: Generate UTC timestamp
         id: timestamp
         run: |
-          UTC_TIME=$(date -u +'%Y-%m-%dT%H:%M')
+          UTC_TIME=$(date -u +'%Y-%m-%d %H:%M')
           TAG_NAME=$(date -u +'build-%Y%m%d-%H%M')
           echo "date=$UTC_TIME" >> $GITHUB_OUTPUT
           echo "tag=$TAG_NAME" >> $GITHUB_OUTPUT
 
-      - name: Download all artifacts
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: artifacts
 
       - name: Create Release
-        id: create_release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: ${{ steps.timestamp.outputs.tag }}
@@ -96,7 +90,4 @@ jobs:
           draft: false
           prerelease: false
           files: |
-            artifacts/*/*
-
-      - name: Show release URL
-        run: echo "Release created at ${{ steps.create_release.outputs.url }}"
+            artifacts/**/*
