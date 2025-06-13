@@ -1,10 +1,9 @@
 name: build
 
 on:
-  push:
-    branches: [ 'main' ]
-  pull_request:
-    branches: [ 'main' ]
+  schedule:
+    - cron: '0 0 * * *'
+  workflow_dispatch:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -25,8 +24,9 @@ jobs:
           - android-arm64
     name: Build
     runs-on: ${{ matrix.platform }}
+    outputs:
+      artifacts: ${{ steps.upload.outputs.artifact_paths }}
     steps:
-
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -55,7 +55,43 @@ jobs:
             github.com/alist-org/alist/v3/internal/conf.WebVersion=dev
 
       - name: Upload artifact
+        id: upload
         uses: actions/upload-artifact@v4
         with:
-          name: openlist_${{ env.SHA }}_${{ matrix.target }}
+          name: openlist_${{ steps.short-sha.outputs.sha }}_${{ matrix.target }}
           path: build/*
+  
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Get UTC timestamp
+        id: time
+        run: echo "tag=nightly-$(date -u '+%Y%m%d-%H%M')" >> $GITHUB_OUTPUT
+        
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          
+      - name: Create Release
+        id: create_release
+        uses: actions/create-release@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.WF_TOKEN }}
+        with:
+          tag_name: ${{ steps.time.outputs.tag }}
+          release_name: Build @ UTC $(date -u '+%Y-%m-%d %H:%M')
+          draft: false
+          prerelease: false
+          
+      - name: Upload Release Assets
+        uses: actions/upload-release-asset@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.WF_TOKEN }}
+        with:
+          upload_url: ${{ steps.create_release.outputs.upload_url }}
+          asset_path: ./artifacts/
+          asset_name: ${{ basename(artifact_path) }}
+          asset_content_type: application/octet-stream
