@@ -1,8 +1,11 @@
-name: beta release
+name: Build and Release
 
 on:
+  workflow_dispatch:
   push:
-    branches: [ 'main' ]
+    branches: [main]
+  pull_request:
+    branches: [main]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -11,26 +14,36 @@ concurrency:
 permissions:
   contents: write
 
+env:
+  ORG_NAME: openlistteam
+  IMAGE_NAME: openlist-git
+  REGISTRY: ghcr.io
+  ARTIFACT_NAME_DOCKER_BINARY: 'docker_binaries'
+  ARTIFACT_NAME_BETA_BINARIES: 'beta_binaries'
+  ARTIFACT_NAME_DOCKER_IMAGES: 'docker_images'
+  RELEASE_PLATFORMS: 'linux/amd64,linux/arm64,linux/arm/v7,linux/386,linux/arm/v6,linux/s390x,linux/ppc64le,linux/riscv64'
+  IMAGE_PUSH: false
+
 jobs:
-  release:
+  build_beta_binaries:
+    name: Build Beta Binaries
+    runs-on: ubuntu-latest
     strategy:
       matrix:
         include:
-          - target: '!(*musl*|*windows-arm64*|*android*|*freebsd*)' # xgo
+          - target: '!(*musl*|*windows-arm64*|*android*|*freebsd*)'
             hash: "md5"
-          - target: 'linux-!(arm*)-musl*' #musl-not-arm
+          - target: 'linux-!(arm*)-musl*'
             hash: "md5-linux-musl"
-          - target: 'linux-arm*-musl*' #musl-arm
+          - target: 'linux-arm*-musl*'
             hash: "md5-linux-musl-arm"
-          - target: 'windows-arm64' #win-arm64
+          - target: 'windows-arm64'
             hash: "md5-windows-arm64"
-          - target: 'android-*' #android
+          - target: 'android-*'
             hash: "md5-android"
-          - target: 'freebsd-*' #freebsd
+          - target: 'freebsd-*'
             hash: "md5-freebsd"
 
-    name: Beta Release
-    runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -45,8 +58,8 @@ jobs:
       - name: Setup web
         run: bash build.sh dev web
 
-      - name: Build
-        uses: go-cross/cgo-actions@454cfd6d20816878926b0253ca8f2dbbd2f7d731 # V1.1.0
+      - name: Build binaries
+        uses: go-cross/cgo-actions@454cfd6d20816878926b0253ca8f2dbbd2f7d731
         with:
           targets: ${{ matrix.target }}
           musl-target-format: $os-$musl-$arch
@@ -59,29 +72,153 @@ jobs:
             github.com/alist-org/alist/v3/internal/conf.GitCommit=$git_commit
             github.com/alist-org/alist/v3/internal/conf.Version=$tag
             github.com/alist-org/alist/v3/internal/conf.WebVersion=dev
-      - name: Compress
+
+      - name: Compress binaries
         run: |
           bash build.sh zip ${{ matrix.hash }}
-      # See above           
-      # - name: Upload assets
-      #   uses: softprops/action-gh-release@v2
-      #   with:
-      #     files: build/compress/*
-      #     prerelease: true
-      #     tag_name: beta
 
-      - name: Clean illegal characters from matrix.target
-        id: clean_target_name
+      - name: Clean target names
+        id: clean_target
         run: |
-          ILLEGAL_CHARS_REGEX='[":<>|*?\\/\r\n]'
-          CLEANED_TARGET=$(echo "${{ matrix.target }}" | sed -E "s/$ILLEGAL_CHARS_REGEX//g")
-          echo "Original target: ${{ matrix.target }}"
-          echo "Cleaned target: $CLEANED_TARGET"
+          CLEANED_TARGET=$(echo "${{ matrix.target }}" | tr -d '":<>|*?\\/\r\n')
           echo "cleaned_target=$CLEANED_TARGET" >> $GITHUB_ENV
-      - name: Upload assets
+
+      - name: Prepare beta binaries artifact
+        run: |
+          mkdir -p beta_binaries
+          for f in build/compress/*; do
+            ext="${f##*.}"
+            mv "$f" "beta_binaries/openlist-${{ env.cleaned_target }}.$ext"
+          done
+
+      - name: Upload beta binaries
         uses: actions/upload-artifact@v4
         with:
-          name: beta builds for ${{ env.cleaned_target }}
-          path: ${{ github.workspace }}/build/compress/*
-          compression-level: 0
-          if-no-files-found: error # 'warn' or 'ignore' are also available, defaults to `warn`
+          name: ${{ env.ARTIFACT_NAME_BETA_BINARIES }}
+          path: beta_binaries/*
+          retention-days: 1
+
+  build_docker_binary:
+    name: Build Docker Binary
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: stable
+
+      - name: Cache Musl
+        id: cache-musl
+        uses: actions/cache@v4
+        with:
+          path: build/musl-libs
+          key: docker-musl-libs-v2
+
+      - name: Download Musl Library
+        if: steps.cache-musl.outputs.cache-hit != 'true'
+        run: bash build.sh prepare docker-multiplatform
+
+      - name: Build go binary
+        run: bash build.sh beta docker-multiplatform
+
+      - name: Upload Docker binaries
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME_DOCKER_BINARY }}
+          path: build/
+          exclude: |
+            **/*.tgz
+            **/musl-libs/**
+          retention-days: 1
+
+  build_docker_images:
+    needs: build_docker_binary
+    name: Build Docker Images
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        variant: ["", "ffmpeg", "aria2", "aio"]
+        include:
+          - variant: ""
+            tag_suffix: "latest"
+            build_args: ""
+          - variant: "ffmpeg"
+            tag_suffix: "ffmpeg"
+            build_args: "INSTALL_FFMPEG=true"
+          - variant: "aria2"
+            tag_suffix: "aria2"
+            build_args: "INSTALL_ARIA2=true"
+          - variant: "aio"
+            tag_suffix: "aio"
+            build_args: "INSTALL_FFMPEG=true INSTALL_ARIA2=true"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download binaries
+        uses: actions/download-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME_DOCKER_BINARY }}
+          path: build/
+
+      - name: Setup Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        run: |
+          mkdir -p docker_images
+          docker buildx build \
+            --file Dockerfile.ci \
+            --build-arg ${{ matrix.build_args }} \
+            --platform ${{ env.RELEASE_PLATFORMS }} \
+            --output type=docker,dest=docker_images/image-${{ matrix.tag_suffix }}.tar \
+            .
+
+      - name: Upload Docker images
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ARTIFACT_NAME_DOCKER_IMAGES }}
+          path: docker_images/*.tar
+          retention-days: 1
+
+  create_release:
+    needs: [build_beta_binaries, build_docker_images]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all artifacts
+        run: |
+          mkdir -p release_assets
+          artifacts=(beta_binaries docker_images)
+          for art in "${artifacts[@]}"; do
+            artifact_name=$(echo $art | tr '[:lower:]' '[:upper:]' | sed 's/_/ /g')
+            gh release download --repo $GITHUB_REPOSITORY \
+              --pattern "$artifact_name*" \
+              --dir release_assets/$art
+          done
+
+      - name: Prepare release assets
+        run: |
+          mkdir -p combined_assets
+          # 合并所有构建产物
+          find release_assets -type f -exec cp {} combined_assets \;
+          echo "Total files: $(ls -1 combined_assets | wc -l)"
+
+      - name: Generate UTC timestamp
+        id: timestamp
+        run: |
+          UTC_TIME=$(date -u +"%Y-%m-%d %H:%M")
+          echo "release_title=Build @ UTC $UTC_TIME" >> $GITHUB_ENV
+          echo "release_tag=build-$(date -u +"%Y%m%d-%H%M")" >> $GITHUB_ENV
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.release_tag }}
+          name: ${{ env.release_title }}
+          files: combined_assets/*
+          token: ${{ secrets.WF_TOKEN }}
+          draft: false
+          prerelease: true
