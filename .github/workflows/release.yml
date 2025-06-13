@@ -1,8 +1,7 @@
 name: release
 
 on:
-  release:
-    types: [ published ]
+  workflow_dispatch
 
 jobs:
   release:
@@ -33,7 +32,7 @@ jobs:
       - name: Prerelease
         uses: irongut/EditRelease@v1.2.0
         with:
-          token: ${{ secrets.MY_TOKEN }}
+          token: ${{ secrets.WF_TOKEN }}
           id: ${{ github.event.release.id }}
           prerelease: true
 
@@ -88,6 +87,6 @@ jobs:
   #     - name: Push tags
   #       uses: ad-m/github-push-action@master
   #       with:
-  #         github_token: ${{ secrets.MY_TOKEN }}
+  #         github_token: ${{ secrets.WF_TOKEN }}
   #         branch: main
   #         repository: alist-org/desktop-release
