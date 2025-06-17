@@ -1,0 +1,59 @@
+name: Sync the Newest OpenList
+
+on:
+  schedule:
+    - cron: '0 23 * * *'
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout self
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          token: ${{ secrets.WF_TOKEN }}
+
+      - name: Backup critical files
+        run: |
+          cp .github/workflows/sync_with_openlist.yaml /tmp/sync_with_openlist.yaml.bak
+          cp .github/workflows/daily.yml /tmp/daily.yml.bak
+          cp .github/workflows/docker.yml /tmp/docker.yml.bak
+          cp README.md /tmp/README.md.bak
+          cp README.zhcn.md /tmp/README.zhcn.md.bak
+
+      - name: Force mirror update
+        run: |
+          git remote add upstream https://github.com/OpenListTeam/OpenList.git || true
+          git fetch upstream
+          git reset --hard upstream/main
+          git clean -fd -x
+
+      - name: Restore critical files
+        run: |
+          mkdir -p .github/workflows
+          cp /tmp/sync_with_openlist.yaml.bak .github/workflows/sync_with_openlist.yaml
+          cp /tmp/daily.yml.bak .github/workflows/daily.yml
+          cp /tmp/docker.yml.bak .github/workflows/docker.yml
+          cp /tmp/README.md.bak README.md
+          cp /tmp/README.zhcn.md.bak README.zhcn.md
+          
+
+      - name: Commit and push
+        run: |
+          git config --global user.name "OpenList Syncer"
+          git config --global user.email "openlistsyncer@ilovescratch.dpdns.org"
+
+          git add .github/workflows/daily.yml
+          git add .github/workflows/docker.yml
+          git add .github/workflows/sync_with_openlist.yaml
+          git add README.md
+          git add README.zhcn.md
+          
+          if git diff-index --quiet HEAD --; then
+            echo "No changes to commit"
+          else
+            git commit -m "Sync: sync the newest OpenList $(date +'%Y-%m-%d')"
+            git push --force origin main
+          fi
